@@ -34,7 +34,9 @@
 
 ### SAVE_ALL中寄存器保存在栈中的位置：
 
-首先用csrw sscratch, sp将当前的栈指针写入 `sscratch` 寄存器。其他寄存器的保存位置由偏移量决定的，`STORE x, x*REGBYTES(sp)`表示第x个寄存器保存到偏移量为`x*REGBYTES(sp)`的地方。
+首先用`csrw sscratch, sp`将当前的栈指针写入 `sscratch` 寄存器。其他寄存器的保存位置由偏移量决定的，`STORE x, x*REGBYTES(sp)`表示第x个寄存器保存到偏移量为`x*REGBYTES(sp)`的地方。
+
+注意，在保存所有寄存器时，需要先将sp的值保存到sscratch中，然后利用`addi sp, sp, -36`更新栈顶以创建大小为36的栈帧，放下一个trapFrame结构体，随后利用sp的值来保存除x2以外所有寄存器的值（因为x2就是sp，而我们需要保存的sp的值已经事先存到sscratch中了），最后保存sscratch、sstatus、sepc、sbadaddr、scause几个寄存器（其中sscratch里面就是需要保存的sp，即x2中的值）。
 
 ### 对于任何中断，__alltraps 中是否都需要保存所有寄存器：
 
