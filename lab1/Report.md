@@ -10,3 +10,5 @@
 - RISC-V硬件加电后的几条指令
 
 ![image-lab0.5-2.png](image/image-lab0.5-2.png)
+
+-设置断点，模拟执行
