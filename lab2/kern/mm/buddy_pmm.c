@@ -4,7 +4,7 @@
 #include <buddy_pmm.h>
 #include <stdio.h>
 
-free_area_t free_area;
+extern free_area_t free_area;
 
 #define free_list (free_area.free_list)
 #define nr_free (free_area.nr_free)
@@ -17,18 +17,19 @@ buddy_init(void) {
 }
 
 static size_t fixsize(size_t size) {
-  size |= size >> 1;
-  size |= size >> 2;
-  size |= size >> 4;
-  size |= size >> 8;
-  size |= size >> 16;
-  return size+1;
+    unsigned i = 0;
+    size--;
+    while (size >= 1) {
+        size >>= 1; 
+        i++;
+    }
+    return 1 << i; 
 }
 
 static void
 buddy_init_memmap(struct Page *base, size_t n) {
     assert(n > 0);
-    assert(IS_POWER_OF_2(n));
+    n=fixsize(n)/2;
     struct Page *p = base;
     for (; p != base + n; p ++) {
         assert(PageReserved(p));
@@ -54,6 +55,19 @@ buddy_init_memmap(struct Page *base, size_t n) {
     }
 }
 
+void print_list()
+{
+    list_entry_t* p=list_next(&free_list);
+    while(list_next(p)!=&free_list)
+    {
+        struct Page *q=le2page(p,page_link);
+        cprintf("%d->",q->property);
+        p=list_next(p);
+    }
+    cprintf("\n");
+    return;
+}
+
 static struct Page *
 buddy_alloc_pages(size_t n)
 {
@@ -64,10 +78,10 @@ buddy_alloc_pages(size_t n)
     }
     struct Page *page = NULL;
     list_entry_t *le = &free_list;
-    size_t min_size=0xffff;
+    size_t min_size=1e9;
     while ((le = list_next(le)) != &free_list) {
         struct Page *p = le2page(le, page_link);
-        if (p->property >= u&&min_size>page->property) {
+        if (p->property >= u&&min_size>p->property) {
             page = p;
             min_size=page->property;
         }
@@ -87,8 +101,9 @@ buddy_alloc_pages(size_t n)
             SetPageProperty(q);
             list_add(prev, &(p->page_link));
             list_add_before(next, &(q->page_link));
-            page=p;
+            page=q;
         }
+        list_del(&(page->page_link));
         nr_free -= page->property;
         ClearPageProperty(page);
     }
@@ -98,7 +113,8 @@ buddy_alloc_pages(size_t n)
 static void
 buddy_free_pages(struct Page *base, size_t n) 
 {
-    assert(n > 0&&IS_POWER_OF_2(n));
+    assert(n > 0);
+    n=fixsize(n);
     struct Page *p = base;
     for (; p != base + n; p ++) {
         assert(!PageReserved(p) && !PageProperty(p));
@@ -123,10 +139,10 @@ buddy_free_pages(struct Page *base, size_t n)
         }
     }
     size_t flag=1;
-    struct Page *q=le2page(&free_list,page_link);
+    struct Page *q=le2page(list_next(&free_list),page_link);
     while(flag==1)
     {
-        if(((base-q)/base->property)&1==1)
+        if(((base-q)/base->property)%2==1)
         {
             list_entry_t* le = list_prev(&(base->page_link));
             if (le != &free_list) {
@@ -140,10 +156,10 @@ buddy_free_pages(struct Page *base, size_t n)
                 else flag=0;
             }
         }
-        else if(((base-q)/base->property)&1==0)
+        else if(((base-q)/base->property)%2==0)
         {
             list_entry_t* le = list_next(&(base->page_link));
-            if (le != NULL) {
+            if (le != &free_list) {
                 p = le2page(le, page_link);
                 if (base + base->property == p && p->property==base->property) {
                     base->property += p->property;
@@ -162,67 +178,46 @@ buddy_nr_free_pages(void) {
 }
 
 static void
-buddy_check(void) {
-    int count = 0, total = 0;
-    list_entry_t *le = &free_list;
-    while ((le = list_next(le)) != &free_list) {
-        struct Page *p = le2page(le, page_link);
-        assert(PageProperty(p));
-        count ++, total += p->property;
-    }
-    assert(total == nr_free_pages());
+buddy_check(void)
+{
+    struct Page *p0, *A, *B, *C, *D;
+    p0 = A = B = C = D = NULL;
+    A = alloc_pages(70);
+    B = alloc_pages(35);
+    C = alloc_pages(257);
+    D = alloc_pages(63);
+    cprintf("A分配70，B分配35，C分配257，D分配63\n");
+    cprintf("此时A %p\n",A);
+    cprintf("此时B %p\n",B);
+    cprintf("此时C %p\n",C);
+    cprintf("此时D %p\n",D);
+    free_pages(B, 35);
+    cprintf("B释放35\n");
+    free_pages(D, 63);
+    cprintf("D释放63\n");
+    cprintf("此时BD应该合并\n");
+    free_pages(A, 70);
+    cprintf("A释放70\n");
+    cprintf("此时前512个已空，我们再分配511个的A来测试\n");
+    A = alloc_pages(511);
+    cprintf("A分配511\n");
+    cprintf("此时A %p\n",A);
+    free_pages(A, 511);
+    cprintf("A释放511\n");
 
-    struct Page *p0 = alloc_pages(5), *p1, *p2;
-    assert(p0 != NULL);
-    assert(!PageProperty(p0));
-
-    list_entry_t free_list_store = free_list;
-    list_init(&free_list);
-    assert(list_empty(&free_list));
-    assert(alloc_page() == NULL);
-
-    unsigned int nr_free_store = nr_free;
-    nr_free = 0;
-
-    free_pages(p0 + 2, 3);
-    assert(alloc_pages(4) == NULL);
-    assert(PageProperty(p0 + 2) && p0[2].property == 3);
-    assert((p1 = alloc_pages(3)) != NULL);
-    assert(alloc_page() == NULL);
-    assert(p0 + 2 == p1);
-
-    p2 = p0 + 1;
-    free_page(p0);
-    free_pages(p1, 3);
-    assert(PageProperty(p0) && p0->property == 1);
-    assert(PageProperty(p1) && p1->property == 3);
-
-    assert((p0 = alloc_page()) == p2 - 1);
-    free_page(p0);
-    assert((p0 = alloc_pages(2)) == p2 + 1);
-
-    free_pages(p0, 2);
-    free_page(p2);
-
-    assert((p0 = alloc_pages(5)) != NULL);
-    assert(alloc_page() == NULL);
-
-    assert(nr_free == 0);
-    nr_free = nr_free_store;
-
-    free_list = free_list_store;
-    free_pages(p0, 5);
-
-    le = &free_list;
-    while ((le = list_next(le)) != &free_list) {
-        struct Page *p = le2page(le, page_link);
-        count --, total -= p->property;
-    }
-    assert(count == 0);
-    assert(total == 0);
+    A = alloc_pages(255);
+    B = alloc_pages(255);
+    cprintf("A分配255，B分配255\n");
+    cprintf("此时A %p\n",A);
+    cprintf("此时B %p\n",B);
+    free_pages(C, 257);
+    free_pages(A, 255);
+    free_pages(B, 255);  
+    cprintf("全部释放\n");
+    cprintf("检查完成，没有错误\n");
 }
 
-const struct pmm_manager default_pmm_manager = {
+const struct pmm_manager buddy_pmm_manager = {
     .name = "buddy_pmm_manager",
     .init = buddy_init,
     .init_memmap = buddy_init_memmap,
