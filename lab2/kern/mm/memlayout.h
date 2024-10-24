@@ -32,10 +32,7 @@ typedef uintptr_t pde_t;
  * physical page. In kern/mm/pmm.h, you can find lots of useful functions
  * that convert Page to other data types, such as physical address.
  * */
-struct Page {  
-    uintptr_t free_blocks;          // used for slub
-    size_t free_blocks_num;         // used for slub
-
+struct Page { 
     int ref;                        // page frame's reference counter
     uint64_t flags;                 // array of flags that describe the status of the page frame
     unsigned int property;          // the num of free block, used in first fit pm manager

@@ -77,14 +77,15 @@ buddy_alloc_pages(size_t n)
         return NULL;
     }
     struct Page *page = NULL;
-    list_entry_t *le = &free_list;
+    list_entry_t *le = list_next(&free_list);
     size_t min_size=1e9;
-    while ((le = list_next(le)) != &free_list) {
+    while (le != &free_list) {
         struct Page *p = le2page(le, page_link);
         if (p->property >= u&&min_size>p->property) {
             page = p;
             min_size=page->property;
         }
+        le = list_next(le);
     }
     if (page != NULL) 
     {
@@ -99,8 +100,8 @@ buddy_alloc_pages(size_t n)
             q->property=page->property/2;
             SetPageProperty(p);
             SetPageProperty(q);
-            list_add(prev, &(p->page_link));
-            list_add_before(next, &(q->page_link));
+            list_add(prev, &(q->page_link));
+            list_add_before(next, &(p->page_link));
             page=q;
         }
         list_del(&(page->page_link));
@@ -149,12 +150,14 @@ buddy_free_pages(struct Page *base, size_t n)
                 p = le2page(le, page_link);
                 if (p + p->property == base && p->property==base->property) {
                     p->property += base->property;
+                    SetPageProperty(p);
                     ClearPageProperty(base);
                     list_del(&(base->page_link));
                     base = p;
                 }
                 else flag=0;
             }
+            else flag=0;
         }
         else if(((base-q)/base->property)%2==0)
         {
@@ -163,11 +166,13 @@ buddy_free_pages(struct Page *base, size_t n)
                 p = le2page(le, page_link);
                 if (base + base->property == p && p->property==base->property) {
                     base->property += p->property;
+                    SetPageProperty(base);
                     ClearPageProperty(p);
                     list_del(&(p->page_link));
                 }
                 else flag=0;
             }
+            else flag=0;
         }
     }
 }
