@@ -22,15 +22,24 @@ PMP1: 0x0000000000000000-0xffffffffffffffff (A,R,W,X)
 (THU.CST) os is loading ...
 Special kernel symbols:
   entry  0xffffffffc0200032 (virtual)
-  etext  0xffffffffc02018fc (virtual)
-  edata  0xffffffffc0206010 (virtual)
-  end    0xffffffffc0206470 (virtual)
+  etext  0xffffffffc02019ec (virtual)
+  edata  0xffffffffc0206018 (virtual)
+  end    0xffffffffc0206480 (virtual)
 Kernel executable memory footprint: 26KB
 memory management: best_fit_pmm_manager
 physcial memory map:
   memory: 0x0000000007e00000, [0x0000000080200000, 0x0000000087ffffff].
-kernel panic at kern/mm/best_fit_pmm.c:137:
-    assertion failed: !PageReserved(p) && !PageProperty(p)
-Welcome to the kernel debug monitor!!
-Type 'help' for a list of commands.
-K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K> K
+check_alloc_page() succeeded!
+satp virtual address: 0xffffffffc0205000
+satp physical address: 0x0000000080205000
+++ setup timer interrupts
+100 ticks
+100 ticks
+100 ticks
+100 ticks
+100 ticks
+100 ticks
+100 ticks
+100 ticks
+100 ticks
+100 ticks
