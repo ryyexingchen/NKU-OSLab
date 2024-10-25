@@ -108,8 +108,8 @@ struct kmem_cache{
     uint64_t freelist;          // 与SlubPage中的freelist用处一致
     uint64_t object_size;       // 用于保存该cache下的object大小
     struct SlubPage *page;      // 指向快速路径的slub_page
-    list_entry_t full_head;          // 指向full区域的第一个成员
-    list_entry_t partial_head;       // 指向慢速缓存的slub_page中的第一个成员（后面的成员用链表连接）
+    list_entry_t full;          // 指向full区域的第一个成员
+    list_entry_t partial;       // 指向慢速缓存的slub_page中的第一个成员（后面的成员用链表连接）
 };
 ```
 
@@ -143,7 +143,51 @@ unsigned int getCacheNo(size_t n){
 ```
 
 ## 内存分配
+```c
+static uintptr_t kmem_alloc(size_t n){
+    unsigned int cache_no = getCacheNo(n);
+    assert(cache_no > 8);// 只接受小于一页的内存分配
+    kmem_cache* p_cache = &kmem_slub_cache[cache_no];
 
+    // 情况1:如果当前slub_cache为空或者没有空闲的object
+    size_t offset = p_cache->object_size / 8;
+    if(p_cache->page === NULL || p_cache->page->free_object_num == 0){
+        while(!list_empty(&p_cache->partial)){
+            list_entry_t* le = &p_cache->partial;
+            if((le = list_next(le)) != &p_cache->partial){
+                p_cache->page = le2page(le,page_link);
+                p_cache->page->freelist = (uintptr_t)KADDR(page2pa((p_cache->page)));
+                if(p_cache->free_object_num == p_cache->page->free_object_num + 1){
+                    pmm_manager->free_pages(p_cache->page,1);
+                }
+            }
+        }
+        //如果没有空闲的slubpage了，那么请pmm_manager分配一个新页
+        p_cache->page = PagetoSlub(pmm_manager->alloc_pages(1));
+        
+        //将新分配好的放入freelist中
+        p_cache->page->freelist = (uintptr_t)KADDR(page2pa((p_cache->page)));
+        uint64_t* p = (uint64_t*)p_cache->page->freelist;
+        for(size_t i = 0;i < p_cache->free_object_num; i++){
+            if(i != p_cache->free_object_num - 1){
+                *(p + i * offset) = (uintptr_t)(p + (i + 1) * offset);
+            }else *(p + i * offset) = 0;
+        }
+        p_cache->page->free_object_num = p_cache->free_object_num;
+    }
+    
+    // 情况2：直接从freelist中找到合适的object
+    uint64_t* result = (uint64_t*)p_cache->page->freelist;
+    if(*(result) == 0){
+        p_cache->page->freelist = 0;
+        list_add(&p_cache->full,&(p_cache->page->page_link));
+    }else{
+        p_cache->page->freelist = *(uint64_t* )(p_cache->page->freelist);
+    }
+    p_cache->page->free_object_num--;
+    return (uintptr_t)result;
+}
+```
 ## 内存释放
 
 ## 实现的困难
