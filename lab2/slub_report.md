@@ -61,19 +61,41 @@ slub页需要实现几个功能:保存页状态（empty、full或者是partial�
 ```c
 struct SlubPage {
     struct slub_cache *p_slub_cache;// 指向对应的slub_cache
-    size_t object_size;             // 表示object的大小
     size_t free_object_num;         // 保存剩余objects的数量
     unsigned int page_status;       // 0为empty、1为partial、2为full
-    uint64_t first_free_object;     // 指向第一个空闲object
+    uint64_t freelist;     // 指向第一个空闲object
+
     // 下面的是原先的页实现的部分
     int ref;                        // page frame's reference counter
     uint64_t flags;                 // array of flags that describe the status of the page frame
     unsigned int property;          // the num of free block, used in first fit pm manager
-    list_entry_t page_link;         // free list link
+    list_entry_t page_link;         // 可以利用原先的free_list指针指向free、full和partial链表
 };
 ```
 
+这里注意没有把object_size加进去是由于简化考虑，将其定义放在了slub_cache中，下文会提及
+
 ## slub_cache设计
+在原先的设计中，slub_cache中有一个指向kmem_cache_cpu的指针，而kmem_cache_cpu结构大致如下图所示:
 
+![kmem_cache_cpu结构](./image/kmem_cache_cpu.webp)
 
+从上图中可以看到，kmem_cache_cpu中最重要的部分就是freelist指针、page指针和partial指针。其中freelist指针和page指针相当与一个一级cache，是用于快速路径的，partial指针相当于后面的二级三级cache（NUMA NODE的那套机制相当于是内存，由于太复杂了不考虑实现）
 
+实际上kmem_cache_cpu是为了不同的cpu而设计的，slub_cache的设想也是凌驾于所有cpu之上，通过NUMA机制在不同cpu之间调节slub内存。但是为了简化，我们不涉及NUMA机制，也就不需要这么复杂的数据结构，因此为将kmem_cache_cpu与slub_cache合并，并去除了不必要的成员（如cpu的id等），只保留kmem_cache的核心功能，设计的数据结构如下:
+
+```c
+struct kmem_cache{
+    uint64_t freelist;          // 与SlubPage中的freelist用处一致
+    uint64_t object_size;       // 用于保存该cache下的object大小
+    struct SlubPage *page;      // 指向快速路径的slub_page
+    list_entry_t full_head;          // 指向full区域的第一个成员
+    list_entry_t partial_head;       // 指向慢速缓存的slub_page中的第一个成员（后面的成员用链表连接）
+};
+```
+
+下图是简化前的kmem_cache结构，我将kmem_cache_cpu的部分删去并将其成员freelist、page和partial放入cache中并替代先前指向kmem_cache_cpu的指针。
+
+![kmem_cache结构](./image/kmem_cache.webp)
+
+由于我们打算使用数组方式进行管理（而不是双向链表），因此没有next和prev成员。
