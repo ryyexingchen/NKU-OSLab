@@ -13,6 +13,8 @@
 
 ## 整体设计思想
 
+由于利用伙伴系统分配内存空间时，不满一页均按照一页的大小分配，因此在分配不足4K的内存时会出现大量浪费。而slub算法就是为了解决这种情况而被设计出来的。其将内存划分成更小的单位object，当分配的内存不足一页时，就会调用slub系统，对其分配object对象。
+
 在完整学过slub算法的原理之后，我发觉就这个小小的ucore内核实现slub算法是不现实的，因此需要提取思想将其简化。先附上一张slub总体结构图:（图中的slab看成slub就行）
 
 ![slub总体结构图](./image/slub.webp)
@@ -52,7 +54,7 @@
 
 可以看到里面有不同的部分。最重要的部分是object_size、freepointer和redzone(起padding作用，实际上还有防止溢出的作用)。
 
-要简化object结构，可以保留object_size和freepointer即可，必要时可以增加padding填充。
+要简化object结构，可以保留object_size和freepointer即可，必要时可以增加padding填充。object对象的大小最小为8 Bytes，最大不超过一个page的大小（4KB）。
 
 ## slub页设计
 
@@ -63,7 +65,7 @@ struct SlubPage {
     struct slub_cache *p_slub_cache;// 指向对应的slub_cache
     size_t free_object_num;         // 保存剩余objects的数量
     unsigned int page_status;       // 0为empty、1为partial、2为full
-    uint64_t freelist;     // 指向第一个空闲object
+    uintptr_t freelist;             // 指向第一个空闲object
 
     // 下面的是原先的页实现的部分
     int ref;                        // page frame's reference counter
@@ -73,7 +75,24 @@ struct SlubPage {
 };
 ```
 
-这里注意没有把object_size加进去是由于简化考虑，将其定义放在了slub_cache中，下文会提及
+这里注意没有把object_size加进去是由于简化考虑，将其定义放在了slub_cache中，下文会提及。于是我们拿到伙伴系统分配的一个页后需要将Page类型转化为SlubPage类型，转化函数如下：
+
+```c
+static struct SlubPage *
+PagetoSlub(struct Page* page, struct slub_cache *cache){
+    struct SlubPage *slub = malloc(sizeof(struct SlubPage));
+    slub->p_slub_cache = cache;
+    slub->free_object_num = 4096 / cache->object_size;
+    slub->page_status = 0;  // 默认为空状态
+    slub->freelist = page2pa(struct Page *page);    // 空表的第一个object即为空的
+    // 剩下的将page的成员copy过来
+    slub->ref = page->ref;
+    slub->flags = page->flags;
+    slub->property = page->property;
+    slub->page_link = page->page_link;
+    return slub;
+}
+```
 
 ## slub_cache设计
 在原先的设计中，slub_cache中有一个指向kmem_cache_cpu的指针，而kmem_cache_cpu结构大致如下图所示:
@@ -98,4 +117,39 @@ struct kmem_cache{
 
 ![kmem_cache结构](./image/kmem_cache.webp)
 
-由于我们打算使用数组方式进行管理（而不是双向链表），因此没有next和prev成员。
+由于我们打算使用数组方式进行管理（而不是双向链表），因此没有next和prev成员。而且为了简化实现，我们打算利用类似于伙伴系统的机制: 
+
+##### (1) 由于page单位为 4KB = 4096 Bytes，所以我打算新建一个kmem_cache类型的数组，每一个kmem_cache元素对应固定大小object的slub页缓存池。我们规定object对象的大小为 [8 Bytes, 4096 Bytes），因此数组个数有9个，分别对应 8 Bytes、16 Bytes、32 Bytes、64 Bytes、128 Bytes、256 Bytes、512 Bytes、1024 Bytes、2048 Bytes的对象池。这样固定object的大小是为了考虑slub页内的内存对齐。
+
+##### (2) 与伙伴系统不同的是，object对象不存在合并和分裂的情况，所以我们认为任意内存对2取对数、向上取整再减去3即为其对应的cache编号（小于8 Bytes认为编号为0）。利用公式可以表示成: `cache_no =  [log2(n)] - 3`。例如，如果要分配 1000 Bytes内存，所以其对应的cache编号为7。当需要分配的内存大于4096 Bytes时，理论上来说应该先利用伙伴系统分配page，剩下的内存根据大小进行判断，如果剩下的内存不超过半页（2048 Bytes），我们就利用slub算法分配object，如果大于半页，那么我们还是利用伙伴系统分配一个整页给他。
+
+计算cache_no的函数如下:
+```c
+unsigned int getCacheNo(size_t n){
+    if(n < 16){
+        return 0;
+    }
+    else{
+        unsigned int cache_no = 0;
+        unsigned int i = 1;
+        while (i < n) {
+            i <<= 1;
+            cache_no++;
+        }
+        return cache_no - 3;
+    }   
+}
+
+```
+
+## 内存分配
+
+## 内存释放
+
+## 实现的困难
+但即使把实现方式简化到上述的程度，实现还是非常困难。主要的困难来源有以下几点：
+##### (1) object在内存中的实际分配。我们注意到每个object里面都有一个指针，指向下一个空闲的object。但实际上，在这个ucore的框架下，我们很难去直接修改其内存，控制我们规定的空闲的object中的free_list指针的指向（换句话来说，该内核框架只支持以页为单位的调度，很难实现以object为单位的调度）。
+
+##### (2) slub算法要求，在空slub页（状态为empty的slub页）超过一个阈值时，需要将多余的slub页还给操作系统；在slub页不足时向伙伴系统申请一个新页。但是由于实验框架所限，很难实现slub算法与伙伴系统之间的沟通，因此在此框架下实际实现几乎不可能。
+
+
