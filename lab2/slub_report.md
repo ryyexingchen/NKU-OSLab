@@ -11,6 +11,8 @@
 
 ### 这篇B站图文讲解也可以，但是不如其他详细: `https://www.bilibili.com/read/cv35002973/`
 
+由于本算法的简化版依然比较复杂，因此我并没有给出完整的代码，而是把已经完成的片段代码方在了下面的实验报告中。由于slub算法本身就很复杂，简化的方式也比较复杂，因此本篇的篇幅会比较长，敬请谅解。
+
 ## 整体设计思想
 
 由于利用伙伴系统分配内存空间时，不满一页均按照一页的大小分配，因此在分配不足4K的内存时会出现大量浪费。而slub算法就是为了解决这种情况而被设计出来的。其将内存划分成更小的单位object，当分配的内存不足一页时，就会调用slub系统，对其分配object对象。
@@ -64,7 +66,6 @@ slub页需要实现几个功能:保存页状态（empty、full或者是partial�
 struct SlubPage {
     struct slub_cache *p_slub_cache;// 指向对应的slub_cache
     size_t free_object_num;         // 保存剩余objects的数量
-    unsigned int page_status;       // 0为empty、1为partial、2为full
     uintptr_t freelist;             // 指向第一个空闲object
 
     // 下面的是原先的页实现的部分
@@ -75,7 +76,7 @@ struct SlubPage {
 };
 ```
 
-这里注意没有把object_size加进去是由于简化考虑，将其定义放在了slub_cache中，下文会提及。于是我们拿到伙伴系统分配的一个页后需要将Page类型转化为SlubPage类型，转化函数如下：
+这里注意没有把object_size加进去是由于简化考虑，将其定义放在了slub_cache中，下文会提及。于是我们拿到伙伴系统分配的一个页后需要将Page类型转化为SlubPage类型，转化函数如下:
 
 ```c
 static struct SlubPage *
@@ -83,7 +84,6 @@ PagetoSlub(struct Page* page, struct slub_cache *cache){
     struct SlubPage *slub = malloc(sizeof(struct SlubPage));
     slub->p_slub_cache = cache;
     slub->free_object_num = 4096 / cache->object_size;
-    slub->page_status = 0;  // 默认为空状态
     slub->freelist = page2pa(struct Page *page);    // 空表的第一个object即为空的
     // 剩下的将page的成员copy过来
     slub->ref = page->ref;
@@ -91,6 +91,20 @@ PagetoSlub(struct Page* page, struct slub_cache *cache){
     slub->property = page->property;
     slub->page_link = page->page_link;
     return slub;
+}
+```
+
+相应的，将slub页释放回伙伴系统时，需要将SlabPage类型转化为Page类型，转化函数如下:
+
+```c
+static struct Page *
+SlubtoPage(struct SlubPage* slub){
+    struct Page *page = malloc(sizeof(struct Page));
+    page->ref = slub->ref;
+    page->flags = slub->flags;
+    page->property = slub->property;
+    page->page_link = slub->page_link;
+    return page;
 }
 ```
 
@@ -143,6 +157,8 @@ unsigned int getCacheNo(size_t n){
 ```
 
 ## 内存分配
+在分配object时，需要考虑两种情况: 如果当前cache中没有合适的object分配，需要从伙伴系统重新分配一个页，并将其划为object（实际的slub算法中支持多个页，出于简化考虑每次只分配一个页）；如果cache中有空闲的object可以分配，那么就直接将其分配给内存即可。
+
 ```c
 static uintptr_t kmem_alloc(size_t n){
     unsigned int cache_no = getCacheNo(n);
@@ -163,7 +179,7 @@ static uintptr_t kmem_alloc(size_t n){
             }
         }
         //如果没有空闲的slubpage了，那么请pmm_manager分配一个新页
-        p_cache->page = PagetoSlub(pmm_manager->alloc_pages(1));
+        p_cache->page = PagetoSlub(pmm_manager->alloc_pages(1),p_cache);
         
         //将新分配好的放入freelist中
         p_cache->page->freelist = (uintptr_t)KADDR(page2pa((p_cache->page)));
@@ -175,7 +191,7 @@ static uintptr_t kmem_alloc(size_t n){
         }
         p_cache->page->free_object_num = p_cache->free_object_num;
     }
-    
+
     // 情况2：直接从freelist中找到合适的object
     uint64_t* result = (uint64_t*)p_cache->page->freelist;
     if(*(result) == 0){
@@ -190,10 +206,61 @@ static uintptr_t kmem_alloc(size_t n){
 ```
 ## 内存释放
 
-## 实现的困难
-但即使把实现方式简化到上述的程度，实现还是非常困难。主要的困难来源有以下几点：
-##### (1) object在内存中的实际分配。我们注意到每个object里面都有一个指针，指向下一个空闲的object。但实际上，在这个ucore的框架下，我们很难去直接修改其内存，控制我们规定的空闲的object中的free_list指针的指向（换句话来说，该内核框架只支持以页为单位的调度，很难实现以object为单位的调度）。
+在内存释放时，需要考虑页面的状态，如从full变成partial或者从partial变成empty。如果变成了空页面，我们就将其释放到伙伴系统中。
 
-##### (2) slub算法要求，在空slub页（状态为empty的slub页）超过一个阈值时，需要将多余的slub页还给操作系统；在slub页不足时向伙伴系统申请一个新页。但是由于实验框架所限，很难实现slub算法与伙伴系统之间的沟通，因此在此框架下实际实现几乎不可能。
+```c
+static void kmem_free(uintptr_t base,size_t n){
+     unsigned int cache_no = getCacheNo(n);
+    assert(cache_no > 8);
+    kmem_cache* p_cache = &kmem_slub_cache[cache_no];
+
+    uintptr_t pa = PADDR(base);
+    struct SlubPage* page = PagetoSlub(pa2page(pa),p_cache);
+
+    if(page == p_cache->page){// 如果从快速路径释放缓存
+        p_cache->page->free_object_num++;
+        if(p_cache->free_object_num == p_cache->page->free_object_num){// 如果释放后的page为空页面
+            p_cache->page = NULL;
+            pmm_manager->free_pages(SlubtoPage(page),1);// 利用伙伴系统将空页释放回去
+        }
+        *(uint64_t*)base = p_cache->page->freelist;
+        p_cache->page->freelist = base;
+    }else{// 如果从慢速路径释放缓存
+        list_entry_t* le = &page->page_link;
+        while (le != &p_cache->full && le != &p_cache->partial) {
+             le = list_next(le);
+        }
+        if(le == &p_cache->full){// 被释放的object来自full状态的slub_page
+            // 把
+            list_del(&(page->page_link));
+            list_add(&(p_cache->partial),&(page->page_link));
+            page->free_object_num++;
+
+            if(p_cache->free_object_num == page->free_object_num){// 如果释放后的page为空页面
+                list_del(&page->page_link);
+                pmm_manager->free_pages(SlubtoPage(page),1);// 利用伙伴系统将空页释放回去
+            }
+        }
+        else{ // 被释放的object来自partial状态的slub_page
+            page->free_object_num++;
+            if(p_cache->free_object_num == page->free_object_num){
+                list_del(&page->page_link);
+                pmm_manager->free_pages(SlubtoPage(page),1);// 利用伙伴系统将空页释放回去
+            }
+        }
+    }
+}
+```
+
+## 实现的困难
+但即使把实现方式简化到上述的程度，实现还是非常困难。主要的困难来源有以下几点:
+
+### (1) object在内存中的实际分配。我们注意到每个object里面都有一个指针，指向下一个空闲的object。但实际上，在这个ucore的框架下，我们很难去直接修改其内存，控制我们规定的空闲的object中的free_list指针的指向（换句话来说，该内核框架只支持以页为单位的调度，很难实现以object为单位的调度）。
+
+### (2) 由于我们很难为每一个object分配freelist指针，因此寻找下一个空闲的object就会变得比较困难。（因为没有办法通过指针直接寻找下一个空闲object的位置，因此需要逐个遍历，这会使时间复杂度从o(1)增加到o(n)。）
+
+### (3) slub算法要求，在空slub页（状态为empty的slub页）超过一个阈值时，需要将多余的slub页还给操作系统；在slub页不足时向伙伴系统申请一个新页。但是由于实验框架所限，很难实现slub算法与伙伴系统之间的沟通，因此在此框架下实际实现比较困难。
+
+只要把这些问题解决了，那么实现一个简化版的slub算法相对来说就会容易很多。
 
 
