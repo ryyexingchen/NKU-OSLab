@@ -52,6 +52,7 @@ _fifo_map_swappable(struct mm_struct *mm, uintptr_t addr, struct Page *page, int
 
     //(1)link the most recent arrival page at the back of the pra_list_head qeueue.
     list_add(head, entry);
+    cprintf("curr_ptr %p\n", entry);
     return 0;
 }
 /*
