@@ -47,7 +47,7 @@ struct swap_manager
      /* Try to swap out a page, return then victim */
      int (*swap_out_victim) (struct mm_struct *mm, struct Page **ptr_page, int in_tick);
      /* check the page relpacement algorithm */
-     int (*check_swap)(void);     
+     int (*check_swap)      (struct mm_struct *mm);   
 };
 
 extern volatile int swap_init_ok;
@@ -61,5 +61,7 @@ int swap_in(struct mm_struct *mm, uintptr_t addr, struct Page **ptr_result);
 
 //#define MEMBER_OFFSET(m,t) ((int)(&((t *)0)->m))
 //#define FROM_MEMBER(m,t,a) ((t *)((char *)(a) - MEMBER_OFFSET(m,t)))
+
+extern struct swap_manager swap_manager_lru;
 
 #endif

@@ -39,7 +39,7 @@ swap_init(void)
         panic("bad max_swap_offset %08x.\n", max_swap_offset);
      }
 
-     sm = &swap_manager_clock;//use first in first out Page Replacement Algorithm
+     sm = &swap_manager_lru;//use first in first out Page Replacement Algorithm
      int r = sm->init();
      
      if (r == 0)
@@ -160,9 +160,9 @@ check_content_set(void)
 }
 
 static inline int
-check_content_access(void)
+check_content_access(struct mm_struct *mm)
 {
-    int ret = sm->check_swap();
+    int ret = sm->check_swap(mm);
     return ret;
 }
 
@@ -252,7 +252,7 @@ check_swap(void)
      }
      cprintf("set up init env for check_swap over!\n");
      // now access the virt pages to test  page relpacement algorithm 
-     ret=check_content_access();
+     ret=check_content_access(mm);
      assert(ret==0);
      
      //restore kernel mem env
