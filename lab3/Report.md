@@ -120,16 +120,6 @@
   }
   ```
 
-- **`swap_out()`**
-
-  当内存中空闲页不足时调用该函数执行页面换出操作，将当前内存中的不活跃页面保存到硬盘。
-
-  ```c
-  int swap_out(struct mm_struct *mm, int n) {
-      // 执行页面换出
-  }
-  ```
-
 - **`_fifo_init_mm()`**
 
   初始化FIFO页面置换的队列结构，函数中通过 `list_init()` 初始化双向链表 `pra_list_head`，并将`mm->sm_priv`指向该链表头。
