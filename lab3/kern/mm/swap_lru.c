@@ -43,9 +43,10 @@ _lru_init_mm(struct mm_struct *mm)
 static int 
 _lru_operate(struct mm_struct *mm, uintptr_t addr){
     // 该函数的作用是，如果访问的页在链表中，那么就将其挪到队尾
+    bool judge = false; //判断页是否在链表中
     list_entry_t *head=(list_entry_t*) mm->sm_priv;
-
-    // 通过输入的地址获取Page结构体的地址
+    
+    // 寻找物理地址对应的页
     addr = ROUNDDOWN(addr, PGSIZE);
     //cprintf("LRU operation: addr=%x\n",addr);
     pte_t *ptep = get_pte(mm->pgdir, addr, 1);
@@ -58,12 +59,15 @@ _lru_operate(struct mm_struct *mm, uintptr_t addr){
     curr_ptr = list_next(head);
     while(curr_ptr != head){// 遍历链表
         if(le2page(curr_ptr, pra_page_link) == page){//如果这个page在链表中，采用先删除后添加的方式
+            judge = true;
             list_del(curr_ptr);
             break;
         }
         curr_ptr = list_next(curr_ptr);
     }
-    list_add(head, entry);
+    if(judge){
+        list_add(head, entry);
+    }
     return 0;
 }
 /*
@@ -190,3 +194,4 @@ struct swap_manager swap_manager_lru =
      .swap_out_victim = &_lru_swap_out_victim,
      .check_swap      = &_lru_check_swap,
 };
+

@@ -23,7 +23,7 @@ PMP1: 0x0000000000000000-0xffffffffffffffff (A,R,W,X)
 
 Special kernel symbols:
   entry  0xc0200036 (virtual)
-  etext  0xc020448a (virtual)
+  etext  0xc020448e (virtual)
   edata  0xc020a040 (virtual)
   end    0xc02115a0 (virtual)
 Kernel executable memory footprint: 70KB
@@ -96,17 +96,6 @@ curr_ptr 0xffffffffc02258f0
 count is 1, total is 8
 check_swap() succeeded!
 ++ setup timer interrupts
-100 ticks
-100 ticks
-100 ticks
-100 ticks
-100 ticks
-100 ticks
-100 ticks
-100 ticks
-100 ticks
-100 ticks
-100 ticks
 100 ticks
 100 ticks
 100 ticks
