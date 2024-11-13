@@ -452,3 +452,128 @@ swap_map_swappable(mm, addr, page, 1);
 - **`flags` 和 `ref` 字段**：用于表示页面状态和引用次数。通过这些信息，系统可以判断页面是否处于空闲状态、是否需要保留等，从而在换入和换出操作时使用这些标志位辅助管理页面。
 
 ---
+### 练习4：补充完成Clock页替换算法
+通过之前的练习，相信大家对FIFO的页面替换算法有了更深入的了解，现在请在我们给出的框架上，填写代码，实现 Clock页替换算法（mm/swap_clock.c）。(提示:要输出curr_ptr的值才能通过make grade)
+
+请在实验报告中简要说明你的设计实现过程。请回答如下问题：
+
+比较Clock页替换算法和FIFO算法的不同。
+
+**实现过程**：
+
+向_clock_init_mm函数中添加内容，设置页面置换算法所需的链表头 pra_list_head，并将 curr_ptr 指针指向链表头，用于后续的页面替换操作。
+```c
+static int
+_clock_init_mm(struct mm_struct *mm)
+{     
+     /*LAB3 EXERCISE 4: 2213107*/ 
+     // 初始化pra_list_head为空链表
+     // 初始化当前指针curr_ptr指向pra_list_head，表示当前页面替换位置为链表头
+     // 将mm的私有成员指针指向pra_list_head，用于后续的页面替换算法操作
+     //cprintf(" mm->sm_priv %x in fifo_init_mm\n",mm->sm_priv);
+     list_init(&pra_list_head);
+     mm->sm_priv = &pra_list_head;
+     curr_ptr=&pra_list_head;
+     return 0;
+}
+```
+
+修改_clock_map_swappable函数，将新页面插入到链表的末尾，并将页面的 visited 标志设置为 1，表示页面已经被访问。
+```c
+static int
+_clock_map_swappable(struct mm_struct *mm, uintptr_t addr, struct Page *page, int swap_in)
+{
+    list_entry_t *entry=&(page->pra_page_link);
+ 
+    assert(entry != NULL && curr_ptr != NULL);
+    //record the page access situlation
+    /*LAB3 EXERCISE 4: 2213107*/ 
+    // link the most recent arrival page at the back of the pra_list_head qeueue.
+    // 将页面page插入到页面链表pra_list_head的末尾
+    // 将页面的visited标志置为1，表示该页面已被访问
+    list_entry_t *head=(list_entry_t*) mm->sm_priv;
+    list_add(head, entry);
+    page->visited=1;
+    cprintf("curr_ptr %p\n", curr_ptr);
+    return 0;
+}
+```
+
+修改_clock_swap_out_victim函数，它会从链表的头部开始查找，找到第一个 visited 标志为 0 的页面，将其从链表中删除，并返回这个页面作为被置换的页面。如果页面的 visited 标志为 1，则将其重置为 0，并继续查找。
+```c
+static int
+_clock_swap_out_victim(struct mm_struct *mm, struct Page ** ptr_page, int in_tick)
+{
+     list_entry_t *head=(list_entry_t*) mm->sm_priv;
+     assert(head != NULL);
+     assert(in_tick==0);
+     /* Select the victim */
+     //(1)  unlink the  earliest arrival page in front of pra_list_head qeueue
+     //(2)  set the addr of addr of this page to ptr_page
+     curr_ptr = head;
+    while ((curr_ptr = list_prev(curr_ptr))) {
+        /*LAB3 EXERCISE 4: 2213107*/ 
+        // 编写代码
+        // 遍历页面链表pra_list_head，查找最早未被访问的页面
+        // 获取当前页面对应的Page结构指针
+        // 如果当前页面未被访问，则将该页面从页面链表中删除，并将该页面指针赋值给ptr_page作为换出页面
+        // 如果当前页面已被访问，则将visited标志置为0，表示该页面已被重新访问
+        struct Page *p = le2page(curr_ptr, pra_page_link);
+        if (p->visited==0) {
+        list_del(curr_ptr);
+        *ptr_page = le2page(curr_ptr, pra_page_link);
+        break;
+        }
+        else {
+            p->visited=0;
+        }
+    }
+    return 0;
+}
+```
+
+• **比较Clock页替换算法和FIFO算法的不同。**
+
+**答**：  
+Clock页替换算法和FIFO（First-In, First-Out）页替换算法都是用于操作系统中管理内存页面的算法，但它们在选择被替换页面的策略上有所不同：
+
+1. **FIFO算法**：
+   - FIFO算法是最简单的页面替换算法之一。
+   - 它按照页面进入内存的顺序进行替换，即最早进入内存的页面将最先被替换出去。
+   - FIFO算法使用一个队列来跟踪所有可替换的页面，新页面被添加到队列的末尾，而页面替换时总是从队列的头部移除页面。
+   - FIFO算法容易实现，但可能不是最优的，因为它不考虑页面的使用频率或最近是否被访问过。
+
+2. **Clock算法**：
+   - Clock算法是一种近似LRU（Least Recently Used）算法，它试图通过跟踪页面的使用情况来模拟LRU算法的行为。
+   - 在Clock算法中，每个页面都有一个“使用”标志（通常是一个位），操作系统维护一个循环链表，链表中的每个节点代表一个页面。
+   - 当需要替换页面时，操作系统从链表的当前位置开始，检查每个页面的使用标志。如果标志为0，该页面将被替换；如果标志为1，则将标志重置为0，并移动到下一个页面继续检查。
+   - 这个过程类似于时钟的指针在页面链表上移动，因此得名“Clock”算法。
+   - Clock算法比FIFO算法更灵活，因为它考虑了页面的使用情况，但实现起来比FIFO算法复杂。
+
+总的来说，Clock算法通过使用标志和循环检查来提供一种更接近LRU的页面替换策略，而FIFO算法则简单地根据页面进入内存的顺序进行替换。Clock算法通常比FIFO算法有更好的性能，因为它试图保留最近被访问过的页面，这些页面更有可能在未来被再次访问。
+
+### 练习5：阅读代码和实现手册，理解页表映射方式相关知识
+
+• **如果我们采用”一个大页“ 的页表映射方式，相比分级页表，有什么好处、优势，有什么坏处、风险？**
+
+**答**：
+
+**好处和优势**：
+
+1. **减少页表项**：大页可以减少所需的页表项数量，因为一个大页可以映射更多的内存空间。这减少了页表的大小，从而减少了页表本身的内存占用。
+
+2. **减少TLB压力**：由于页表项减少，CPU的TLB缓存可以更有效地工作，因为更少的页表项意味着更高的TLB命中率，减少了页表查找的延迟。
+
+3. **提高性能**：对于访问大量连续内存的应用程序（如数据库、大型数据处理等），使用大页可以减少页表查找次数，从而提高性能。
+
+5. **简化内存管理**：对于操作系统来说，管理大页比管理大量小页更简单，因为需要跟踪的页数减少了。
+
+**坏处和风险**：
+
+1. **内存浪费**：如果应用程序不需要那么大的内存块，使用大页可能导致内存空间的浪费，因为未使用的内存空间不能被其他应用程序利用。
+
+2. **灵活性降低**：大页不适合所有类型的应用程序，特别是那些需要频繁分配和释放小块内存的应用程序。大页可能导致内存分配不够灵活。
+
+3. **增加页错误处理成本**：当发生页错误时，操作系统需要处理更大的内存块，这可能增加页错误处理的复杂性和成本。
+
+总的来说，使用大页的页表映射方式在某些场景下可以提供性能优势，尤其是在处理大量连续内存访问时。然而，它也可能导致内存浪费和灵活性降低，因此在选择使用大页时需要根据具体的应用程序和工作负载特性来决定。
