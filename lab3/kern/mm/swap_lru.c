@@ -26,7 +26,7 @@
  */
 
 extern list_entry_t pra_list_head;
-list_entry_t *curr_ptr;
+extern list_entry_t *curr_ptr;
 /*
  * (2) _fifo_init_mm: init pra_list_head and let  mm->sm_priv point to the addr of pra_list_head.
  *              Now, From the memory control struct mm_struct, we can access FIFO PRA
