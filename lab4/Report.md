@@ -92,3 +92,47 @@ alloc_proc(void) {
    - 内核通过修改`tf`结构的内容，可以实现从中断或系统调用返回时恢复用户态进程的执行。
 
 通过`context`和`tf`，可以实现进程的上下文切换以及中断处理机制，保证了多任务环境下进程的正常运行。
+
+
+### 练习3：编写proc_run 函数
+
+- 检查要切换的进程是否与当前正在运行的进程相同，如果相同则不需要切换。
+```c
+if (proc != current)
+```
+- 禁用中断
+```c
+local_intr_save(intr_flag);
+```
+- 切换当前进程为要运行的进程
+```c
+current = proc;
+```
+- 切换页表，以便使用新进程的地址空间。
+```c
+lcr3(proc->cr3);
+```
+- 实现上下文切换。
+```c
+switch_to(&(temp->context),&(proc->context));
+```
+- 允许中断。
+```c
+local_intr_restore(intr_flag);  
+```
+#### 在本实验的执行过程中，创建且运行了几个内核线程？
+本次实验创建并运行了两个内核线程，即idleproc和initproc。
+
+### Challenge
+
+#### 说明语句local_intr_save(intr_flag);....local_intr_restore(intr_flag);是如何实现开关中断的？
+
+两函数核心函数如下：
+```c
+/* intr_enable - enable irq interrupt */
+void intr_enable(void) { set_csr(sstatus, SSTATUS_SIE); }
+
+/* intr_disable - disable irq interrupt */
+void intr_disable(void) { clear_csr(sstatus, SSTATUS_SIE); }
+```
+其作用就是设置sstatus寄存器的SIE二进制位，将其设置为0时，会将S态运行的程序禁用全部中断，将其设置为1时，会将S态运行的程序启用中断。

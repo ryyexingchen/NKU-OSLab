@@ -187,11 +187,9 @@ proc_run(struct proc_struct *proc) {
         bool intr_flag;
         struct proc_struct *temp = current;
         local_intr_save(intr_flag);
-        {
-            current = proc;
-            lcr3(proc->cr3);
-            switch_to(&(temp->context),&(proc->context));
-        }
+        current = proc;
+        lcr3(proc->cr3);
+        switch_to(&(temp->context),&(proc->context));
         local_intr_restore(intr_flag);  
     }
 }
