@@ -22,10 +22,10 @@ PMP1: 0x0000000000000000-0xffffffffffffffff (A,R,W,X)
 (THU.CST) os is loading ...
 
 Special kernel symbols:
-  entry  0xc0200032 (virtual)
-  etext  0xc0204e74 (virtual)
+  entry  0xc0200036 (virtual)
+  etext  0xc0204e2e (virtual)
   edata  0xc020a060 (virtual)
-  end    0xc02155cc (virtual)
+  end    0xc0215600 (virtual)
 Kernel executable memory footprint: 86KB
 memory management: default_pmm_manager
 physcial memory map:
@@ -100,7 +100,7 @@ check_swap() succeeded!
 this initproc, pid = 1, name = "init"
 To U: "Hello world!!".
 To U: "en.., Bye, Bye. :)"
-kernel panic at kern/process/proc.c:355:
+kernel panic at kern/process/proc.c:353:
     process exit!!.
 
 Welcome to the kernel debug monitor!!

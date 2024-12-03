@@ -93,6 +93,108 @@ alloc_proc(void) {
 
 通过`context`和`tf`，可以实现进程的上下文切换以及中断处理机制，保证了多任务环境下进程的正常运行。
 
+### 练习2：为新创建的内核线程分配资源
+#### (1)设计实现过程
+
+其实实验要求中已经把实验流程说得非常清楚了。主要是编写`do_work`函数，完成具体内核线程的创建工作。流程如下：
+   - 调用`alloc_proc`，获得一块用户信息块
+   - 为进程分配一个内核栈
+   - 复制原进程的内存管理信息到新进程
+   - 复制原进程上下文到新进程
+   - 将新进程添加到进程列表
+   - 唤醒新进程
+   - 返回新进程号
+根据以上流程编写的`do_work`函数如下：
+```c
+int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf) {
+    int ret = -E_NO_FREE_PROC;
+    struct proc_struct *proc;
+    if (nr_process >= MAX_PROCESS) {
+        goto fork_out;
+    }
+    ret = -E_NO_MEM;
+    // 1、调用alloc_proc，获得一块用户信息块
+    proc = alloc_proc();
+    if(proc == NULL){
+        goto fork_out;
+    }
+    // 2、为进程分配一个内核栈
+    proc->parent = current;
+    if(setup_kstack(proc) != 0){
+        goto bad_fork_cleanup_proc; // 这个地方需要把刚才分配给进程的内存释放掉
+    }
+    // 3、复制原进程的内存管理信息到新进程
+    if(copy_mm(clone_flags, proc) != 0){
+        goto bad_fork_cleanup_kstack; // 这个地方还需要把刚才分配的内核栈释放掉
+    }
+    // 4、复制原进程上下文到新进程
+    copy_thread(proc, stack, tf);
+    proc->pid = get_pid(); // 获取新进程号
+    // 5、将新进程添加到进程列表
+    hash_proc(proc); // 添加到hash表中
+    list_add(&proc_list, &(proc->list_link)); // 添加到链表中
+    // 6、唤醒新进程
+    wakeup_proc(proc);
+    // 7、返回新进程号
+    ret = proc->pid;
+
+fork_out:
+    return ret;
+
+bad_fork_cleanup_kstack:
+    put_kstack(proc);
+bad_fork_cleanup_proc:
+    kfree(proc);
+    goto fork_out;
+}
+```
+#### (2)请说明ucore是否做到给每个新fork的线程一个唯一的id？请说明你的分析和理由。
+
+先说结论：ucore确实做到了给每个新fork线程分配一个唯一的id，分配id的主要逻辑在`get_pid`函数中得以体现。`get_pid`函数的实现如下：
+```c
+// get_pid - alloc a unique pid for process
+static int get_pid(void) {
+    static_assert(MAX_PID > MAX_PROCESS);
+    struct proc_struct *proc;
+    list_entry_t *list = &proc_list, *le;
+    static int next_safe = MAX_PID, last_pid = MAX_PID;
+    if (++ last_pid >= MAX_PID) {
+        last_pid = 1;
+        goto inside;
+    }
+    if (last_pid >= next_safe) {
+    inside:
+        next_safe = MAX_PID;
+    repeat:
+        le = list;
+        while ((le = list_next(le)) != list) {
+            proc = le2proc(le, list_link);
+            if (proc->pid == last_pid) {
+                if (++ last_pid >= next_safe) {
+                    if (last_pid >= MAX_PID) {
+                        last_pid = 1;
+                    }
+                    next_safe = MAX_PID;
+                    goto repeat;
+                }
+            }
+            else if (proc->pid > last_pid && next_safe > proc->pid) {
+                next_safe = proc->pid;
+            }
+        }
+    }
+    return last_pid;
+}
+```
+
+接下来，我来对这个函数的核心逻辑进行分析：
+   - 函数中的next_safe和last_pid是static局部变量，这意味着其在函数调用之间保持状态。这两个变量分别记录了下一个安全的pid和上一次分配的pid。由于其保存了上一次函数调用的结果，因此在next_safe和last_pid之间的任何值都是未被占用的，因此可以作为合法的pid。
+   - 当`last_pid + 1 < next_safe`时，表明当前的`last_pid + 1`是合法的、未被使用的、唯一的pid，可以直接返回。
+   - 如果`last_pid + 1 >= next_safe`或者`last_pid + 1 > MAX_PID`时，函数将遍历进程列表proc_list以寻找一个新的合适的区间。
+   - 在上述遍历寻找新区间的过程中，如果发现last_pid已经被占用（对应函数中的`proc->pid == last_pid`），则last_pid会递增，直到找到下一个合适的区间为止。如果last_pid超过了MAX_PID，则会将last_pid重置为1，next_safe设置为MAX_PID，重新开始遍历整个区间。
+   - 在完整遍历链表后，如果没有发生任何冲突，我们就可以得到一个合适的区间`[last_pid, next_safe)`，在这个区间内的所有pid都是未被使用过的、可以用来分配的pid。最终，函数会选择last_pid作为新线程的pid。
+
+因此，通过队以上逻辑分析，`get_pid`函数为新fork线程获取了一个唯一的id。
 
 ### 练习3：编写proc_run 函数
 
