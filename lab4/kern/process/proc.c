@@ -114,8 +114,6 @@ alloc_proc(void) {
         proc->cr3 = boot_cr3;                 // 页表基址设置为内核页表
         proc->flags = 0;                      // 标志位初始化为0
         memset(proc->name, 0, PROC_NAME_LEN); // 清空进程名
-
-
     }
     return proc;
 }
