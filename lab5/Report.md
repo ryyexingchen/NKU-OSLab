@@ -13,7 +13,37 @@
 
 请在实验报告中简要说明你的设计实现过程。
 
+首先分析我们需要实现的函数load_icode，它实际运行逻辑如下：
+
+1. 首先检查当前进程的内存管理结构是否为空，如果不为空，则报错，如果为空，则为当前进程创建一个新的内存管理结构。
+1. 如果建立成功，就给它分配一个内存管理页表。
+1. 根据elf的e_magic，先判断其是否是一个合法的ELF文件。然后遍历每一个程序段头，对每个类型为ELF_PT_LOAD的section进行处理。
+1. 建立用户栈空间，同时为用户栈分配了一块合法的虚拟内存空间。
+1. 设置当前进程的内存管理器，页表寄存器以及当前用户进程的trapframe结构体。
+
+通过分析可知，我们需要完善的最后一步就是设置trapframe这个结构体，一共需要设置三个寄存器的值：
+
+1. 将tf->gpr.sp设置为用户栈的顶部地址。
+2. epc指向ELF可执行文件加载到内存之后的入口处
+3. 设置tf->status，将特权级别设置为用户模式，并且禁用中断。
+
+
 - **请简要描述这个用户态进程被 ucore 选择占用 CPU 执行（RUNNING 态）到具体执行应用程序第一条指令的整个经过。**
+
+- 进程被创建后，它处于就绪态，等待操作系统内核调度选中它来执行。在就绪态下，进程被加入到可运行的进程队列中。
+- do_wait函数确认存在可以RUNNABLE的子进程后，调用schedule函数。
+- schedule函数通过调用proc_run来运行新线程（上次的练习3）。在proc_run里面它会切换当前进程为要运行的进程，切换页表，以便使用新进程的地址空间。然后调用switch_to()函数实现上下文切换。
+- 切换完进程上下文，然后跳转到forkret。forkret函数是直接调用forkrets函数，forkrets再把传进来的参数，也就是进程的中断帧放在了sp，然后跳到__trapret。
+- __trapret函数直接从中断帧里面恢复所有的寄存器，然后通过sret指令，跳转到userproc->tf.epc指向的函数，即kernel_thread_entry。
+- 由于`int pid = kernel_thread(user_main, NULL, 0)`这里把user_main作为参数传给了tf.gpr.s0（上一次实验说到s0寄存器里放的是新进程要执行的函数），所以kernel_thread_entry里我们跳转到user_main。
+- user_main打印userproc的pid和name信息，然后调用kernel_execve。
+- kernel_execve这里没有直接调用do_execve函数，而是用ebreak产生断点中断进行处理，进入exception_handler函数的断点处理，通过设置a7寄存器的值为10说明这不是一个普通的断点中断，而是要转发到syscall()。而SYS_exec作为系统调用号，告诉syscall()要执行do_execve函数。
+- do_execve检查虚拟内存空间的合法性，释放虚拟内存空间，加载应用程序，创建新的mm结构和页目录表。其中最重要的是do_execve调用load_icode函数，load_icode加载应用程序的各个program section到新申请的内存上，为BSS section分配内存并初始化为全0，分配用户栈内存空间。设置当前用户进程的mm结构、页目录表的地址及加载页目录表地址到cr3寄存器。设置当前用户进程的tf结构。
+- 执行完load_icode函数后，就会把user_main传递进来的参数设置当前用户进程的名字后返回。这里一直返回到exception_handler函数，接着执行`kernel_execve_ret(tf,current->kstack+KSTACKSIZE)`函数。
+- kernel_execve_ret函数主要操作是调整栈指针并复制上一个陷阱帧的内容到新的陷阱帧中。然后跳转到_trapret函数。
+- 通过__trapret函数RESTORE_ALL，然后sret跳转到epc指向的函数（tf->epc = elf->e_entry），即用户程序的入口。
+- 最后执行应用程序第一条指令。
+
 
 ---
 
