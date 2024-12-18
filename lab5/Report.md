@@ -48,15 +48,257 @@
 ---
 
 
-  ### 练习2: 父进程复制自己的内存空间给子进程（需要编码）
-
+### 练习2: 父进程复制自己的内存空间给子进程（需要编码）
+#### 2.1 完成 `copy_range` 函数
 创建子进程的函数 `do_fork` 在执行中将当前进程（即父进程）的用户内存地址空间中的合法内容复制给新进程（子进程），完成内存资源的复制。具体是通过 `copy_range` 函数（位于kern/mm/pmm.c中）实现的，请补充 `copy_range` 的实现，确保能够正确执行。
 
 请在实验报告中简要说明你的设计实现过程。
 
+`copy_range` 函数是进程创建过程中的一个关键组成部分，它负责在父进程和子进程之间复制用户内存地址空间的内容。当操作系统通过 `do_fork` 函数创建一个新进程时，会根据 clone_flags 标志位来决定是否需要为子进程复制父进程的内存内容。如果需要复制，`do_fork` 会调用 `copy_mm` 函数，该函数进一步调用 `dup_mmap`，最终由 `dup_mmap` 调用 `copy_range` 来执行实际的内存复制工作。`copy_range` 的调用流图为：`do_fork` --> `copy_mm` --> `dup_mmap` --> `copy_range`
+
+`copy_range` 函数的参数包括指向子进程页目录的 `to` 指针，指向父进程页目录的 `from` 指针，以及一个 `share` 标志位，后者在当前实现中并未使用，因为在练习2中，我们采用的是复制（dup）而非共享（share）内存的方法。在 Challenge 中实现 COW 机制时会用到这个参数。`copy_range` 函数的作用是遍历父进程中由 `start` 和 `end` 界定的虚拟地址范围，为子进程中的每个页面分配新的物理页面，并将父进程页面的内容复制到这些新分配的页面中。在这个过程中，`copy_range` 还会保留页面的权限设置，确保子进程能够以正确的权限访问其内存页面。 `copy_range` 函数实现如下：
+
+```c
+int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end,
+               bool share) {
+    assert(start % PGSIZE == 0 && end % PGSIZE == 0);
+    assert(USER_ACCESS(start, end));
+    // copy content by page unit.
+    do {
+        // call get_pte to find process A's pte according to the addr start
+        pte_t *ptep = get_pte(from, start, 0), *nptep;
+        if (ptep == NULL) {
+            start = ROUNDDOWN(start + PTSIZE, PTSIZE);
+            continue;
+        }
+        // call get_pte to find process B's pte according to the addr start. If
+        // pte is NULL, just alloc a PT
+        if (*ptep & PTE_V) {
+            if ((nptep = get_pte(to, start, 1)) == NULL) {
+                return -E_NO_MEM;
+            }
+            uint32_t perm = (*ptep & PTE_USER);
+            // get page from ptep
+            struct Page *page = pte2page(*ptep);
+            // alloc a page for process B
+            struct Page *npage = alloc_page();
+            assert(page != NULL);
+            assert(npage != NULL);
+            int ret = 0;
+            /* LAB5:EXERCISE2 YOUR CODE
+             * replicate content of page to npage, build the map of phy addr of
+             * nage with the linear addr start
+             *
+             * Some Useful MACROs and DEFINEs, you can use them in below
+             * implementation.
+             * MACROs or Functions:
+             *    page2kva(struct Page *page): return the kernel vritual addr of
+             * memory which page managed (SEE pmm.h)
+             *    page_insert: build the map of phy addr of an Page with the
+             * linear addr la
+             *    memcpy: typical memory copy function
+             *
+             * (1) find src_kvaddr: the kernel virtual address of page
+             * (2) find dst_kvaddr: the kernel virtual address of npage
+             * (3) memory copy from src_kvaddr to dst_kvaddr, size is PGSIZE
+             * (4) build the map of phy addr of  nage with the linear addr start
+             */
+            void* src_kvaddr = page2kva(page); // 获取父进程页面的内核虚拟地址作为memcpy函数的源地址
+            void* dst_kvaddr = page2kva(npage); // 获取子进程页面的内核虚拟地址作为memcpy函数的目的地址
+            memcpy(dst_kvaddr, src_kvaddr, PGSIZE); // 复制附近成的页面内容到子进程的页面中
+            ret = page_insert(to, npage, start, perm); // 建立子进程页面虚拟地址到物理地址的映射关系 
+            assert(ret == 0);
+        }
+        start += PGSIZE;
+    } while (start != 0 && start < end);
+    return 0;
+}
+```
+
+总的来说，`copy_range` 函数的功能就是以页为单位调用 `memcpy` 函数，将父进程的用户内存地址空间中的内容逐页复制到子进程中，从而完成内存资源的复制。
+
+#### 2.2 设计并实现COW机制（包括Challenge的要求）
 - **如何设计实现 Copy on Write 机制？** 给出概要设计，鼓励给出详细设计。
 
 > **Copy-on-write (简称COW)** 的基本概念是：如果有多个使用者对一个资源A（比如内存块）进行读操作，则每个使用者只需获得一个指向同一个资源A的指针，就可以该资源。若某使用者需要对该资源进行写操作，系统会对该资源进行拷贝操作，从而使得该“写操作”使用者获得一个该资源A的“私有”拷贝——资源B，可对资源B进行写操作。该“写操作”使用者对资源B的改变对于其他使用者而言是不可见的，因为其他使用者看到的还是资源A。
+
+COW机制的设计思路在Challenge的描述中已经很清晰，可以大致分为两个步骤：
+
+1、当一个用户父进程创建自己的子进程时，父进程会把其申请的用户空间设置为只读，子进程可共享父进程占用的用户内存空间中的页面（这就是一个共享的资源）。
+
+2、当其中任何一个进程修改此用户内存空间中的某页面时，ucore会通过page fault异常获知该操作，并完成拷贝内存页面，使得两个进程都有各自的内存页面。这样一个进程所做的修改不会被另外一个进程可见了。
+
+- 步骤1需要在 `copy_range` 函数中实现。借助练习2中没有用上的 share 变量，控制是否采用COW机制。在COW机制下，只需要将父进程的页面设为只读，然后再将父进程的页面插入子进程的页表中即可。这样子进程就共享了父进程中的页面。函数实现如下所示：
+
+```c
+int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end,
+               bool share) {
+    assert(start % PGSIZE == 0 && end % PGSIZE == 0);
+    assert(USER_ACCESS(start, end));
+    // copy content by page unit.
+    do {
+        // call get_pte to find process A's pte according to the addr start
+        pte_t *ptep = get_pte(from, start, 0), *nptep;
+        if (ptep == NULL) {
+            start = ROUNDDOWN(start + PTSIZE, PTSIZE);
+            continue;
+        }
+        // call get_pte to find process B's pte according to the addr start. If
+        // pte is NULL, just alloc a PT
+        if (*ptep & PTE_V) {
+            if ((nptep = get_pte(to, start, 1)) == NULL) {
+                return -E_NO_MEM;
+            }
+            uint32_t perm = (*ptep & PTE_USER);
+            // get page from ptep
+            struct Page *page = pte2page(*ptep);
+            int ret = 0;
+            if(share){ // COW机制启用
+                cprintf("COW sharing page at addr %x\n", page2kva(page));
+                page_insert(from, page, start, perm & ~PTE_W); // 将父进程的页面设为只读
+                ret = page_insert(to, page, start, perm & ~PTE_W); // 把父进程中的页面插入子进程的页表中，即子进程中共享了父进程中的页面（只读）
+            }
+            else{ // COW没启用时与原先操作保持一致
+                // alloc a page for process B
+                struct Page *npage = alloc_page();
+                assert(page != NULL);
+                assert(npage != NULL);
+                cprintf("alloc a new page at addr %x\n", page2kva(npage));
+                /* LAB5:EXERCISE2 YOUR CODE
+                * replicate content of page to npage, build the map of phy addr of
+                * nage with the linear addr start
+                *
+                * Some Useful MACROs and DEFINEs, you can use them in below
+                * implementation.
+                * MACROs or Functions:
+                *    page2kva(struct Page *page): return the kernel vritual addr of
+                * memory which page managed (SEE pmm.h)
+                *    page_insert: build the map of phy addr of an Page with the
+                * linear addr la
+                *    memcpy: typical memory copy function
+                *
+                * (1) find src_kvaddr: the kernel virtual address of page
+                * (2) find dst_kvaddr: the kernel virtual address of npage
+                * (3) memory copy from src_kvaddr to dst_kvaddr, size is PGSIZE
+                * (4) build the map of phy addr of  nage with the linear addr start
+                */
+                void* src_kvaddr = page2kva(page); // 获取父进程页面的内核虚拟地址作为memcpy函数的源地址
+                void* dst_kvaddr = page2kva(npage); // 获取子进程页面的内核虚拟地址作为memcpy函数的目的地址
+                memcpy(dst_kvaddr, src_kvaddr, PGSIZE); // 复制附近成的页面内容到子进程的页面中
+                ret = page_insert(to, npage, start, perm); // 建立子进程页面虚拟地址到物理地址的映射关系
+            }
+            assert(ret == 0);
+        }
+        start += PGSIZE;
+    } while (start != 0 && start < end);
+    return 0;
+}
+```
+
+- 当子进程访问到共享页时，如果是读操作，可以直接进行读取操作；但是如果进行写操作，则会触发一个缺页异常，进入 `do_pgfault` 函数，因此步骤2的操作需要在
+ `do_pgfault` 函数中进行。具体操作是，检查进入缺页异常的原因，如果是因为尝试写入一个只读页，那么我们就新建一个页并为这个新页分配内存，然后里面 `memcpy` 函数将先前只读页面上的内容copy到这个新页上。实现的函数如下所示：
+
+```c
+int do_pgfault(struct mm_struct *mm, uint_t error_code, uintptr_t addr) {
+    int ret = -E_INVAL;
+    //try to find a vma which include addr
+    struct vma_struct *vma = find_vma(mm, addr);
+    pgfault_num++;
+    //If the addr is in the range of a mm's vma?
+    if (vma == NULL || vma->vm_start > addr) {
+        cprintf("not valid addr %x, and  can not find it in vma\n", addr);
+        goto failed;
+    }
+
+    uint32_t perm = PTE_U;
+    if (vma->vm_flags & VM_WRITE) {
+        perm |= READ_WRITE;
+    }
+    addr = ROUNDDOWN(addr, PGSIZE);
+    ret = -E_NO_MEM;
+    pte_t *ptep=NULL;
+  
+    // try to find a pte, if pte's PT(Page Table) isn't existed, then create a PT.
+    // (notice the 3th parameter '1')
+    if ((ptep = get_pte(mm->pgdir, addr, 1)) == NULL) {
+        cprintf("get_pte in do_pgfault failed\n");
+        goto failed;
+    }
+    
+    if (*ptep == 0) { // if the phy addr isn't exist, then alloc a page & map the phy addr with logical addr
+        if (pgdir_alloc_page(mm->pgdir, addr, perm) == NULL) {
+            cprintf("pgdir_alloc_page in do_pgfault failed\n");
+            goto failed;
+        }
+    } else {
+        struct Page *page = NULL;
+        if(*ptep & PTE_V){ // 如果因为页面只读进入缺页异常，我们认为时COW机制下子进程尝试写入父进程的共享页面
+            cprintf('pgfault: COW: ptep at addr %x, pte at addr %x\n', ptep, *ptep);
+            page = pte2page(*ptep); // 获取原先的只读物理页
+            if(page_ref(page) > 1){
+                struct Page* new_page = pgdir_alloc_page(mm->pgdir, addr, perm); // 新分配一个物理页
+                void* src_kva = page2kva(page); // 获取只读页的虚拟地址
+                void* dst_kva = page2kva(new_page); // 获取新分配页的虚拟地址
+                memcpy(dst_kva, src_kva, PGSIZE); // 将只读页的内容分配到新页中
+            }
+            else{ // 说明不需要额外新分配一个物理页
+                page_insert(mm->pgdir, page, addr, perm); // 直接修改该页面的权限
+            }
+            swap_map_swappable(mm,addr,page,1);
+            page->pra_vaddr = addr;
+        }
+        else{
+            /*LAB3 EXERCISE 3: YOUR CODE
+            * 请你根据以下信息提示，补充函数
+            * 现在我们认为pte是一个交换条目，那我们应该从磁盘加载数据并放到带有phy addr的页面，
+            * 并将phy addr与逻辑addr映射，触发交换管理器记录该页面的访问情况
+            *
+            *  一些有用的宏和定义，可能会对你接下来代码的编写产生帮助(显然是有帮助的)
+            *  宏或函数:
+            *    swap_in(mm, addr, &page) : 分配一个内存页，然后根据
+            *    PTE中的swap条目的addr，找到磁盘页的地址，将磁盘页的内容读入这个内存页
+            *    page_insert ： 建立一个Page的phy addr与线性addr la的映射
+            *    swap_map_swappable ： 设置页面可交换
+            */
+            if (swap_init_ok) {
+                // 你要编写的内容在这里，请基于上文说明以及下文的英文注释完成代码编写
+                //(1）According to the mm AND addr, try
+                //to load the content of right disk page
+                //into the memory which page managed.
+                //(2) According to the mm,
+                //addr AND page, setup the
+                //map of phy addr <--->
+                //logical addr
+                //(3) make the page swappable.
+                swap_in(mm,addr,&page);
+                page_insert(mm->pgdir,page,addr,perm);
+                swap_map_swappable(mm,addr,page,1);
+                page->pra_vaddr = addr;
+            } else {
+                cprintf("no swap_init_ok but ptep is %x, failed\n", *ptep);
+                goto failed;
+            }
+        }
+        
+   }
+   ret = 0;
+failed:
+    return ret;
+}
+```
+
+- 要启用COW机制，还需要找到调用 `dum_mmap` 函数，并将其中调用 `change_range` 函数的地方将share的值改成1才能启用，如下所示：
+
+```c
+bool share = 1; // 将该变量设为1则开启COW机制 
+if (copy_range(to->pgdir, from->pgdir, vma->vm_start, vma->vm_end, share) != 0) {
+    return -E_NO_MEM;
+}
+```
+
+实际测试后得到的结果如下图所示：
+
+![text result](./test_result1.png)
 
 ---
 
@@ -155,4 +397,24 @@
 
 通过对 `fork`、`exec`、`wait`、`exit` 函数的分析，可以看出这些系统调用是如何协同工作的，保证了进程的创建、执行、退出和资源回收。内核态和用户态的切换通过系统调用的机制实现，用户程序通过 `ecall` 进入内核态，内核完成任务后再返回用户态。进程的生命周期是由多个状态和状态转换决定的，这些状态帮助操作系统管理进程的执行和资源分配。
 
----
+### Challenge
+#### Challenge 1:实现 Copy on Write （COW）机制
+
+给出实现源码,测试用例和设计报告（包括在cow情况下的各种状态转换（类似有限状态自动机）的说明）。
+
+> 这个扩展练习涉及到本实验和上一个实验“虚拟内存管理”。在ucore操作系统中，当一个用户父进程创建自己的子进程时，父进程会把其申请的用户空间设置为只读，子进程可共享父进程占用的用户内存空间中的页面（这就是一个共享的资源）。当其中任何一个进程修改此用户内存空间中的某页面时，ucore会通过page fault异常获知该操作，并完成拷贝内存页面，使得两个进程都有各自的内存页面。这样一个进程所做的修改不会被另外一个进程可见了。请在ucore中实现这样的COW机制。
+
+
+**COW机制的设计和实现过程已经在练习2中完成**
+#### Challenge 2: 说明该用户程序是何时被预先加载到内存中的？与我们常用操作系统的加载有何区别，原因是什么？
+
+我们正常的操作系统的程序，是编译好放到磁盘中的，具体被加载到内存并运行如下：
+
+1.从磁盘读取应用程序并装入内存；
+
+2.应用程序被装入内存后需要加载器对内存中的应用程序部分地址进行重定位；
+
+3.加载器将执行权移交应用程序。
+
+而由于我们ucore没有真正的磁盘，所以这里在调用kernel_execve() 函数时里面的load_icode() 函数将用户程序加载到内存中的，因此并不是一个编译好的程序。
+
