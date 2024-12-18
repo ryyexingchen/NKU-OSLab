@@ -424,8 +424,7 @@ do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf) {
     *    update step 1: set child proc's parent to current process, make sure current process's wait_state is 0
     *    update step 5: insert proc_struct into hash_list && proc_list, set the relation links of process
     */
-    proc = alloc_proc();
-    if(proc == NULL){
+    if((proc = alloc_proc()) == NULL){
         goto fork_out;
     }
     proc->parent = current;

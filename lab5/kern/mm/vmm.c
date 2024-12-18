@@ -202,6 +202,7 @@ dup_mmap(struct mm_struct *to, struct mm_struct *from) {
         insert_vma_struct(to, nvma);
 
         bool share = 0;
+        share = 1; // 将该变量设为1则开启COW机制
         if (copy_range(to->pgdir, from->pgdir, vma->vm_start, vma->vm_end, share) != 0) {
             return -E_NO_MEM;
         }
@@ -399,10 +400,18 @@ do_pgfault(struct mm_struct *mm, uint_t error_code, uintptr_t addr) {
     //try to find a vma which include addr
     struct vma_struct *vma = find_vma(mm, addr);
 
+    cprintf("test: addr = %x\n", addr);
+
     pgfault_num++;
     //If the addr is in the range of a mm's vma?
     if (vma == NULL || vma->vm_start > addr) {
         cprintf("not valid addr %x, and  can not find it in vma\n", addr);
+        if(vma == NULL){
+            cprintf("vma is NULL!\n");
+        }
+        else{
+            cprintf("test: %x\n", vma->vm_start);
+        }
         goto failed;
     }
 
@@ -435,37 +444,58 @@ do_pgfault(struct mm_struct *mm, uint_t error_code, uintptr_t addr) {
             goto failed;
         }
     } else {
-        /*LAB3 EXERCISE 3: YOUR CODE
-        * 请你根据以下信息提示，补充函数
-        * 现在我们认为pte是一个交换条目，那我们应该从磁盘加载数据并放到带有phy addr的页面，
-        * 并将phy addr与逻辑addr映射，触发交换管理器记录该页面的访问情况
-        *
-        *  一些有用的宏和定义，可能会对你接下来代码的编写产生帮助(显然是有帮助的)
-        *  宏或函数:
-        *    swap_in(mm, addr, &page) : 分配一个内存页，然后根据
-        *    PTE中的swap条目的addr，找到磁盘页的地址，将磁盘页的内容读入这个内存页
-        *    page_insert ： 建立一个Page的phy addr与线性addr la的映射
-        *    swap_map_swappable ： 设置页面可交换
-        */
-        if (swap_init_ok) {
-            struct Page *page = NULL;
-            // 你要编写的内容在这里，请基于上文说明以及下文的英文注释完成代码编写
-            //(1）According to the mm AND addr, try
-            //to load the content of right disk page
-            //into the memory which page managed.
-            //(2) According to the mm,
-            //addr AND page, setup the
-            //map of phy addr <--->
-            //logical addr
-            //(3) make the page swappable.
-            swap_in(mm,addr,&page);
-            page_insert(mm->pgdir,page,addr,perm);
+        struct Page *page = NULL;
+        if(*ptep & PTE_W){ // 如果因为页面只读进入缺页异常，我们认为时COW机制下子进程尝试写入父进程的共享页面
+            cprintf('pgfault: COW: ptep at addr %x, pte at addr %x\n', ptep, *ptep);
+            page = pte2page(*ptep); // 获取原先的只读物理页
+            if(page_ref(page) > 1){
+                struct Page* new_page = pgdir_alloc_page(mm->pgdir, addr, perm); // 新分配一个物理页
+                void* src_kva = page2kva(page); // 获取只读页的虚拟地址
+                void* dst_kva = page2kva(new_page); // 获取新分配页的虚拟地址
+                memcpy(dst_kva, src_kva, PGSIZE); // 将只读页的内容分配到新页中
+                cprintf("test: srckva = %x ", src_kva);
+                cprintf("dst_kva = %x\n", dst_kva);
+            }
+            else{ // 说明不需要额外新分配一个物理页
+                page_insert(mm->pgdir, page, addr, perm); // 直接修改该页面的权限
+                cprintf("ttest: %x\n", page2kva(page));
+            }
             swap_map_swappable(mm,addr,page,1);
             page->pra_vaddr = addr;
-        } else {
-            cprintf("no swap_init_ok but ptep is %x, failed\n", *ptep);
-            goto failed;
         }
+        else{
+            /*LAB3 EXERCISE 3: YOUR CODE
+            * 请你根据以下信息提示，补充函数
+            * 现在我们认为pte是一个交换条目，那我们应该从磁盘加载数据并放到带有phy addr的页面，
+            * 并将phy addr与逻辑addr映射，触发交换管理器记录该页面的访问情况
+            *
+            *  一些有用的宏和定义，可能会对你接下来代码的编写产生帮助(显然是有帮助的)
+            *  宏或函数:
+            *    swap_in(mm, addr, &page) : 分配一个内存页，然后根据
+            *    PTE中的swap条目的addr，找到磁盘页的地址，将磁盘页的内容读入这个内存页
+            *    page_insert ： 建立一个Page的phy addr与线性addr la的映射
+            *    swap_map_swappable ： 设置页面可交换
+            */
+            if (swap_init_ok) {
+                // 你要编写的内容在这里，请基于上文说明以及下文的英文注释完成代码编写
+                //(1）According to the mm AND addr, try
+                //to load the content of right disk page
+                //into the memory which page managed.
+                //(2) According to the mm,
+                //addr AND page, setup the
+                //map of phy addr <--->
+                //logical addr
+                //(3) make the page swappable.
+                swap_in(mm,addr,&page);
+                page_insert(mm->pgdir,page,addr,perm);
+                swap_map_swappable(mm,addr,page,1);
+                page->pra_vaddr = addr;
+            } else {
+                cprintf("no swap_init_ok but ptep is %x, failed\n", *ptep);
+                goto failed;
+            }
+        }
+        
    }
    ret = 0;
 failed:

@@ -365,35 +365,42 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end,
             uint32_t perm = (*ptep & PTE_USER);
             // get page from ptep
             struct Page *page = pte2page(*ptep);
-            // alloc a page for process B
-            struct Page *npage = alloc_page();
-            assert(page != NULL);
-            assert(npage != NULL);
             int ret = 0;
-            /* LAB5:EXERCISE2 YOUR CODE
-             * replicate content of page to npage, build the map of phy addr of
-             * nage with the linear addr start
-             *
-             * Some Useful MACROs and DEFINEs, you can use them in below
-             * implementation.
-             * MACROs or Functions:
-             *    page2kva(struct Page *page): return the kernel vritual addr of
-             * memory which page managed (SEE pmm.h)
-             *    page_insert: build the map of phy addr of an Page with the
-             * linear addr la
-             *    memcpy: typical memory copy function
-             *
-             * (1) find src_kvaddr: the kernel virtual address of page
-             * (2) find dst_kvaddr: the kernel virtual address of npage
-             * (3) memory copy from src_kvaddr to dst_kvaddr, size is PGSIZE
-             * (4) build the map of phy addr of  nage with the linear addr start
-             */
+            if(share){ // COW机制启用
+                cprintf("COW sharing page at addr %x\n", page2kva(page));
+                page_insert(from, page, start, perm & ~PTE_W); // 将父进程的页面设为只读
+                ret = page_insert(to, page, start, perm & ~PTE_W); // 把父进程中的页面插入子进程的页表中，即子进程中共享了父进程中的页面（只读）
+            }
+            else{
+                // alloc a page for process B
+                struct Page *npage = alloc_page();
+                assert(page != NULL);
+                assert(npage != NULL);
+                cprintf("alloc a new page at addr %x\n", page2kva(npage));
+                /* LAB5:EXERCISE2 YOUR CODE
+                * replicate content of page to npage, build the map of phy addr of
+                * nage with the linear addr start
+                *
+                * Some Useful MACROs and DEFINEs, you can use them in below
+                * implementation.
+                * MACROs or Functions:
+                *    page2kva(struct Page *page): return the kernel vritual addr of
+                * memory which page managed (SEE pmm.h)
+                *    page_insert: build the map of phy addr of an Page with the
+                * linear addr la
+                *    memcpy: typical memory copy function
+                *
+                * (1) find src_kvaddr: the kernel virtual address of page
+                * (2) find dst_kvaddr: the kernel virtual address of npage
+                * (3) memory copy from src_kvaddr to dst_kvaddr, size is PGSIZE
+                * (4) build the map of phy addr of  nage with the linear addr start
+                */
 
-            void* src_kvaddr = page2kva(page); // 获取父进程页面的内核虚拟地址作为memcpy函数的源地址
-            void* dst_kvaddr = page2kva(npage); // 获取子进程页面的内核虚拟地址作为memcpy函数的目的地址
-            memcpy(dst_kvaddr, src_kvaddr, PGSIZE); // 复制附近成的页面内容到子进程的页面中
-            ret = page_insert(to, npage, start, perm); // 建立子进程页面虚拟地址到物理地址的映射关系
-
+                void* src_kvaddr = page2kva(page); // 获取父进程页面的内核虚拟地址作为memcpy函数的源地址
+                void* dst_kvaddr = page2kva(npage); // 获取子进程页面的内核虚拟地址作为memcpy函数的目的地址
+                memcpy(dst_kvaddr, src_kvaddr, PGSIZE); // 复制附近成的页面内容到子进程的页面中
+                ret = page_insert(to, npage, start, perm); // 建立子进程页面虚拟地址到物理地址的映射关系
+            }
             assert(ret == 0);
         }
         start += PGSIZE;
